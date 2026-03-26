@@ -35,33 +35,103 @@ client = OpenAI(api_key=API_KEY, base_url=BASE_URL)
 
 # ── System prompt ─────────────────────────────────────────────────────────
 SYSTEM_PROMPT = """
-You are an expert industrial order-processing AI for Antigravity Hardware Supply Company.
-Carefully analyse the handwritten order sheet — which may include rough sketches, arrows,
-crossed-out items, abbreviations, and diagrams — and extract structured order data.
+You are an expert AI system designed to extract structured order data from handwritten hardware order sheets.
 
-STRICT OUTPUT RULES:
-1. Respond ONLY with a valid JSON object — no markdown fences, no explanation.
-2. Follow this exact schema:
+These sheets may include:
+- Handwritten text
+- Diagrams, arrows, sketches
+- Partial words or abbreviations
+
+Your job is to intelligently interpret the content and extract ONLY the required structured fields.
+
+---
+
+### 🎯 EXTRACTION GOAL:
+
+Extract the customer/company name and ONLY the following fields for each item:
+
+1. main_item → clear product name (normalized)
+2. color → if mentioned (else null)
+3. thickness → include numeric value + unit (e.g., "5 mm", "2 inch") (else null)
+4. quantity → integer (default = 1 if unclear)
+5. length → include numeric value + unit (e.g., "10 ft", "2 m") (else null)
+
+---
+
+### 🧠 UNDERSTANDING RULES:
+
+- Extract the customer_name (can be a company name or single person) if visible on the sheet.
+- Interpret diagrams, arrows, and labels as references to items
+- Map nearby values (numbers, units) correctly to:
+  → thickness
+  → length
+  → quantity
+- Normalize product names (e.g., "rod", "steel rod", "iron rod" → "rod")
+- If multiple attributes are near a drawing, associate them logically
+
+---
+
+### ⚠️ UNCERTAINTY HANDLING:
+
+- If any field is unclear → set it as null
+- DO NOT guess unrealistic values
+- DO NOT hallucinate products
+
+---
+
+### ❌ STRICT LIMITATIONS:
+
+- DO NOT include extra fields
+- DO NOT add explanations
+- DO NOT return text outside JSON
+
+---
+
+### ✅ OUTPUT FORMAT (STRICT JSON ONLY):
+
 {
-  "customer_intent": "order | inquiry | unclear",
-  "customer_name": "<name if visible, else null>",
-  "order_date": "<date if visible, else null>",
+  "customer_name": "",
   "items": [
     {
-      "product_name": "<exact or best-guess product name>",
-      "quantity": "<numeric quantity or null if unclear>",
-      "unit": "<unit e.g. pcs, kg, m, box — or null>",
-      "notes": "<any special notes, specs, or modifiers>",
-      "confidence": <float 0.0–1.0>
+      "main_item": "",
+      "color": "",
+      "thickness": "",
+      "quantity": "",
+      "length": ""
     }
-  ],
-  "additional_notes": "<general order notes, delivery instructions, etc.>",
-  "extraction_warnings": ["<list any unclear regions or assumptions made>"]
+  ]
 }
-3. Crossed-out items are CANCELLED — do NOT include them.
-4. Arrows pointing to quantities/products must be resolved and linked.
-5. Common hardware abbreviations: pcs=pieces, m=metres, kg=kilograms, dz=dozen.
-6. If confidence < 0.5, still include the item — just set confidence accurately.
+
+---
+
+### 📌 EXAMPLE:
+
+Input:
+"Acme Corp: 5 red pipes 10 ft length 2 inch thick"
+
+Output:
+{
+  "customer_name": "Acme Corp",
+  "items": [
+    {
+      "main_item": "pipe",
+      "color": "red",
+      "thickness": "2 inch",
+      "quantity": 5,
+      "length": "10 ft"
+    }
+  ]
+}
+
+---
+
+### 🔥 IMPORTANT:
+
+- Prioritize correct mapping over exact OCR text
+- Understand context like a human reading a rough note
+- Extract ONLY meaningful structured data
+
+Process the image now.
 """
 
 
@@ -156,30 +226,23 @@ def parse_response(raw: str) -> dict:
 
     logger.error("Failed to parse JSON from model output.")
     return {
-        "customer_intent": "unclear",
         "customer_name": None,
-        "order_date": None,
         "items": [],
-        "additional_notes": "PARSE ERROR — model did not return valid JSON",
-        "extraction_warnings": ["Failed to parse model output"],
+        "error": "PARSE ERROR — model did not return valid JSON"
     }
 
 
 def validate_order(order: dict) -> dict:
-    """Fill missing keys with safe defaults."""
-    order.setdefault("customer_intent", "unclear")
-    order.setdefault("customer_name",   None)
-    order.setdefault("order_date",      None)
-    order.setdefault("items",           [])
-    order.setdefault("additional_notes", "")
-    order.setdefault("extraction_warnings", [])
+    """Fill missing keys with safe defaults for the new schema."""
+    order.setdefault("customer_name", None)
+    order.setdefault("items", [])
+    
     for item in order["items"]:
-        item.setdefault("product_name", "Unknown")
-        item.setdefault("quantity",     None)
-        item.setdefault("unit",         None)
-        item.setdefault("notes",        "")
-        item.setdefault("confidence",   0.5)
-        item["confidence"] = max(0.0, min(1.0, float(item["confidence"])))
+        item.setdefault("main_item", None)
+        item.setdefault("color", None)
+        item.setdefault("thickness", None)
+        item.setdefault("quantity", 1)
+        item.setdefault("length", None)
     return order
 
 
